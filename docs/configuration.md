@@ -5219,6 +5219,43 @@ Allows clients to connect in input-only mode without starting a video stream.
 
 Controls whether new clients may pair with this host.
 
+### default_client_app_uuids
+
+JSON array of application UUIDs assigned to **newly paired certificates**. The
+default `null` preserves unrestricted application access. `[]` denies all
+applications. For example:
+
+```ini
+default_client_app_uuids = ["11111111-1111-4111-8111-111111111111"]
+```
+
+Use the UUID from your own application profile, not its numeric Moonlight ID.
+Existing paired devices keep their saved policy, including when re-pairing the
+same certificate. An invalid default rejects new pairing; an invalid saved
+device policy denies all applications instead of granting unrestricted access.
+
+Client Management can restrict or clear a device's application selection. An
+empty selection denies all applications. The restriction covers the catalogue,
+artwork, launch, resume and synthetic Remote Input/Remote Monitor controls. A
+restricted device cannot replace another running application. Its Moonlight
+Quit request disconnects only that device; stopping the host application remains
+an unrestricted owner's or administrator's operation.
+Changing the selection disconnects that device's pending and established
+streams. Other clients keep their own selections and permissions.
+
+The usual streaming, launch and input permissions still apply and must be
+granted separately by the administrator. Restricted new clients never inherit
+the first-device full-permission shortcut or client command execution.
+
+The authenticated administrator API accepts `allowed_app_uuids: null` for
+unrestricted access or an array of UUID strings in `/api/clients/update`;
+omitting the field preserves its saved policy.
+
+This is an application-profile boundary, not a desktop sandbox. A desktop-share
+profile still shares its capture output. DNS names and HTTP Host headers do not
+identify a guest: the TLS-paired certificate owns the policy, independent of the
+address the device uses to connect. Keep the administrative web port private.
+
 ### envvar_compatibility_mode
 
 Enables compatibility handling for legacy environment-variable based integrations.

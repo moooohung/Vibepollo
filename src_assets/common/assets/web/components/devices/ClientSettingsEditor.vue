@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, toRaw, watch } from 'vue';
+import { computed, onMounted, reactive, ref, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { apiGet } from '@/api/client';
 
 import ClientCommands from '@/components/devices/ClientCommands.vue';
 import SettingsOverrideEditor from '@/components/settings/SettingsOverrideEditor.vue';
@@ -25,6 +26,7 @@ export interface ClientCommandDraft {
 export interface ClientDeviceDraft {
   name: string;
   allowSleep: boolean;
+  allowedAppUuids: string[] | null;
   permissions: number;
   enableLegacyOrdering: boolean;
   allowClientCommands: boolean;
@@ -109,6 +111,41 @@ function serialized(value: ClientDeviceDraft): string {
 }
 
 const draft = reactive<ClientDeviceDraft>(cloneDraft(props.modelValue));
+const applications = ref<Array<{ uuid: string; name: string }>>([]);
+const applicationsError = ref(false);
+onMounted(async () => {
+  try {
+    const response = await apiGet<{ apps: Array<{ uuid: string; name: string }> }>('/api/apps');
+    if (!Array.isArray(response.apps)) throw new Error('Invalid application catalogue');
+    applications.value = response.apps.filter(
+      (app) => typeof app.uuid === 'string' && typeof app.name === 'string',
+    );
+  } catch {
+    applicationsError.value = true;
+  }
+});
+const applicationOptions = computed(() => {
+  const result = [...applications.value];
+  for (const uuid of draft.allowedAppUuids ?? []) {
+    if (!result.some((app) => app.uuid.toLowerCase() === uuid.toLowerCase())) {
+      result.push({ uuid, name: t('client_apps.missing', { uuid }) });
+    }
+  }
+  return result;
+});
+function appSelected(uuid: string): boolean {
+  return (
+    draft.allowedAppUuids?.some((value) => value.toLowerCase() === uuid.toLowerCase()) ?? false
+  );
+}
+function selectApp(uuid: string, event: Event): void {
+  if (draft.allowedAppUuids === null) return;
+  const selected = (event.target as HTMLInputElement).checked;
+  draft.allowedAppUuids = draft.allowedAppUuids.filter(
+    (value) => value.toLowerCase() !== uuid.toLowerCase(),
+  );
+  if (selected) draft.allowedAppUuids.push(uuid);
+}
 let lastSerialized = serialized(props.modelValue);
 
 watch(
@@ -472,6 +509,36 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
               <span>{{ t(`permissions.${permission.key}`) }}</span>
             </label>
           </div>
+        </fieldset>
+        <fieldset class="client-permissions">
+          <legend>{{ t('client_apps.title') }}</legend>
+          <p>{{ t('client_apps.description') }}</p>
+          <label>
+            <input
+              type="checkbox"
+              :checked="draft.allowedAppUuids !== null"
+              :disabled="busy"
+              @change="
+                draft.allowedAppUuids = ($event.target as HTMLInputElement).checked ? [] : null
+              "
+            />
+            {{ t('client_apps.restrict') }}
+          </label>
+          <template v-if="draft.allowedAppUuids !== null">
+            <p v-if="applicationsError" role="alert">{{ t('client_apps.load_error') }}</p>
+            <div class="client-permissions__grid">
+              <label v-for="app in applicationOptions" :key="app.uuid">
+                <input
+                  type="checkbox"
+                  :checked="appSelected(app.uuid)"
+                  :disabled="busy"
+                  @change="selectApp(app.uuid, $event)"
+                />
+                {{ app.name }}
+              </label>
+            </div>
+            <p>{{ t('client_apps.empty_denies') }}</p>
+          </template>
         </fieldset>
       </div>
     </section>

@@ -8,6 +8,71 @@ type HostFixture = {
   restartRequired?: boolean;
 };
 
+test('device application selection persists deny-all and unrestricted distinctly', async ({
+  page,
+}) => {
+  await installHost(page, { platform: 'windows' });
+  const guest = '11111111-1111-4111-8111-111111111111';
+  const owner = '22222222-2222-4222-8222-222222222222';
+  const stored: Record<string, unknown> = {
+    uuid: 'guest-device',
+    name: 'Guest device',
+    perm: 0x071f1f00,
+    allowed_app_uuids: [guest],
+    connected: false,
+  };
+  const updates: Record<string, unknown>[] = [];
+  await page.route('**/api/clients/list', (route) =>
+    route.fulfill({
+      json: {
+        status: true,
+        platform: 'windows',
+        named_certs: [stored],
+      },
+    }),
+  );
+  await page.route('**/api/apps', (route) =>
+    route.fulfill({
+      json: {
+        apps: [
+          { uuid: guest, name: 'Guest Game Share' },
+          { uuid: owner, name: 'Owner desktop' },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/clients/update', (route) => {
+    const payload = route.request().postDataJSON() as Record<string, unknown>;
+    updates.push(payload);
+    Object.assign(stored, payload);
+    return route.fulfill({ json: { status: true } });
+  });
+  await page.goto('/v2/devices');
+  await page.getByRole('button', { name: 'Edit device' }).click();
+  const restrict = page.getByRole('checkbox', {
+    name: 'Only allow selected applications',
+    exact: true,
+  });
+  const selected = page.getByRole('checkbox', { name: 'Guest Game Share', exact: true });
+  await expect(restrict).toBeChecked();
+  await expect(selected).toBeChecked();
+  await expect(
+    page.getByRole('checkbox', { name: 'Owner desktop', exact: true }),
+  ).not.toBeChecked();
+  await selected.uncheck();
+  await page.getByRole('button', { name: 'Save device', exact: true }).click();
+  await expect.poll(() => updates.length).toBe(1);
+  expect(updates[0].allowed_app_uuids).toEqual([]);
+  await page.reload();
+  await page.getByRole('button', { name: 'Edit device' }).click();
+  await expect(restrict).toBeChecked();
+  await expect(selected).not.toBeChecked();
+  await restrict.uncheck();
+  await page.getByRole('button', { name: 'Save device', exact: true }).click();
+  await expect.poll(() => updates.length).toBe(2);
+  expect(updates[1].allowed_app_uuids).toBeNull();
+});
+
 async function installHost(page: Page, options: HostFixture = {}) {
   const platform = options.platform ?? 'linux';
   const config = {
@@ -78,7 +143,9 @@ async function installHost(page: Page, options: HostFixture = {}) {
     }
     await route.fulfill({ json: body });
   });
-  await page.route('**/assets/changelog.json', (route) => route.fulfill({ json: { releases: [] } }));
+  await page.route('**/assets/changelog.json', (route) =>
+    route.fulfill({ json: { releases: [] } }),
+  );
   return patches;
 }
 
@@ -157,7 +224,9 @@ test('Settings retains save and restart actions after a backend requests restart
   const patches = await installHost(page, { platform: 'linux', restartRequired: true });
   let restartRequested = false;
   let releaseRestart!: () => void;
-  const restartPending = new Promise<void>((resolve) => { releaseRestart = resolve; });
+  const restartPending = new Promise<void>((resolve) => {
+    releaseRestart = resolve;
+  });
   await page.route('**/api/restart', async (route) => {
     restartRequested = true;
     await restartPending;
@@ -253,13 +322,15 @@ test('device save merges local display and command edits with the latest server 
   await page.locator('#client-alpha-commands-allow').uncheck();
   await page.getByRole('button', { name: 'Save device' }).click();
 
-  await expect.poll(() => updatePayload).toMatchObject({
-    name: 'Latest server name',
-    display_mode: '2560x1440x144',
-    allow_client_commands: false,
-    do: [{ cmd: 'new-do', elevated: false }],
-    undo: [{ cmd: 'new-undo', elevated: false }],
-  });
+  await expect
+    .poll(() => updatePayload)
+    .toMatchObject({
+      name: 'Latest server name',
+      display_mode: '2560x1440x144',
+      allow_client_commands: false,
+      do: [{ cmd: 'new-do', elevated: false }],
+      undo: [{ cmd: 'new-undo', elevated: false }],
+    });
 });
 
 for (const viewport of [
@@ -346,8 +417,12 @@ for (const viewport of [
     });
     await page.reload();
     await page.getByRole('button', { name: 'Edit device' }).click();
-    await expect(page.getByRole('checkbox', { name: 'View stream', exact: true })).not.toBeChecked();
-    await expect(page.getByRole('checkbox', { name: 'Launch applications', exact: true })).toBeChecked();
+    await expect(
+      page.getByRole('checkbox', { name: 'View stream', exact: true }),
+    ).not.toBeChecked();
+    await expect(
+      page.getByRole('checkbox', { name: 'Launch applications', exact: true }),
+    ).toBeChecked();
     await expect(page.locator('#client-alpha-name')).toHaveValue('Latest server name');
     await expect(page.locator('#client-alpha-display-mode')).toHaveValue('2560x1440x120');
     await expect(page.locator('#client-alpha-commands-allow')).not.toBeChecked();

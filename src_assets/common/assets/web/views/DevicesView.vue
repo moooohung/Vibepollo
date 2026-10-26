@@ -32,6 +32,7 @@ interface PairedDevice {
   uuid: string;
   enabled: boolean;
   allow_sleep?: boolean;
+  allowed_app_uuids?: string[] | null;
   connected: boolean;
   perm?: number | string;
   enable_legacy_ordering?: boolean;
@@ -182,6 +183,7 @@ function normalizeDevice(device: unknown, index: number): PairedDevice {
     name: stringValue(raw.name),
     enabled: booleanValue(raw.enabled, true),
     allow_sleep: raw.allow_sleep === true,
+    allowed_app_uuids: normalizeApplicationPolicy(raw.allowed_app_uuids),
     connected: booleanValue(raw.connected, false),
     last_seen:
       typeof raw.last_seen === 'number' || typeof raw.last_seen === 'string' ? raw.last_seen : null,
@@ -199,6 +201,12 @@ function normalizeDevice(device: unknown, index: number): PairedDevice {
     prefer_10bit_sdr: booleanValue(raw.prefer_10bit_sdr, false),
     config_overrides: configOverrides ? structuredClone(toRaw(configOverrides)) : {},
   };
+}
+
+function normalizeApplicationPolicy(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return [];
+  return [...value];
 }
 
 function displayRoutingLabel(device: PairedDevice): string {
@@ -389,6 +397,7 @@ function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
   return {
     name: device.name,
     allowSleep: device.allow_sleep === true,
+    allowedAppUuids: device.allowed_app_uuids ?? null,
     permissions: permissionMask(device),
     enableLegacyOrdering: device.enable_legacy_ordering !== false,
     allowClientCommands: device.allow_client_commands !== false,
@@ -606,6 +615,7 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
     uuid: device.uuid,
     name: draft.name.trim(),
     allow_sleep: draft.allowSleep,
+    allowed_app_uuids: draft.allowedAppUuids,
     perm: draft.permissions & PERMISSION_ALL,
     enable_legacy_ordering: draft.enableLegacyOrdering,
     allow_client_commands: draft.allowClientCommands,
@@ -639,6 +649,7 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
 const draftScalarKeys = [
   'name',
   'allowSleep',
+  'allowedAppUuids',
   'permissions',
   'enableLegacyOrdering',
   'allowClientCommands',

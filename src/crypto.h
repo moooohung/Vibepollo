@@ -20,6 +20,7 @@
 
 // local includes
 #include "utility.h"
+#include "client_app_policy.h"
 
 namespace crypto {
   struct creds_t {
@@ -120,6 +121,7 @@ namespace crypto {
     bool allow_sleep = false; // Separate administrator opt-in, never inferred from PERM.
     std::optional<std::int64_t> last_seen;
     std::unordered_map<std::string, std::string> config_overrides;
+    client_app_policy::allowlist_t allowed_app_uuids;
   };
 
   using p_named_cert_t = std::shared_ptr<named_cert_t>;

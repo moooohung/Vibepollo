@@ -270,6 +270,9 @@ namespace nvhttp {
    */
   bool disconnect_client(const std::string &uuid);
 
+  /** Set a device's app scope. A changed scope revokes pending and live streams. */
+  bool set_client_app_allowlist(std::string_view uuid, client_app_policy::allowlist_t allowed_apps);
+
   /**
    * @brief Whether a paired client is opted into 10-bit SDR instead of HDR.
    */

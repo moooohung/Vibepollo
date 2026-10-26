@@ -2918,6 +2918,12 @@ namespace confighttp {
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
       nlohmann::json output_tree;
       std::string uuid = input_tree.value("uuid", "");
+      client_app_policy::allowlist_t allowed_apps;
+      const bool has_app_policy = input_tree.contains("allowed_app_uuids");
+      if (has_app_policy && !client_app_policy::parse(input_tree.at("allowed_app_uuids"), allowed_apps)) {
+        bad_request(response, request, "allowed_app_uuids must be null or an array of application UUIDs");
+        return;
+      }
       std::optional<std::string> hdr_profile;
       if (input_tree.contains("hdr_profile")) {
         if (input_tree["hdr_profile"].is_null()) {
@@ -2947,9 +2953,10 @@ namespace confighttp {
         bad_request(response, request, "allow_sleep must be a boolean");
         return;
       }
-      if (!has_extended_fields && (hdr_profile.has_value() || input_tree.contains("allow_sleep"))) {
+      if (!has_extended_fields && (has_app_policy || hdr_profile.has_value() || input_tree.contains("allow_sleep"))) {
         bool updated = true;
-        if (hdr_profile.has_value()) updated = nvhttp::set_client_hdr_profile(uuid, *hdr_profile);
+        if (has_app_policy) updated = nvhttp::set_client_app_allowlist(uuid, allowed_apps);
+        if (hdr_profile.has_value()) updated = nvhttp::set_client_hdr_profile(uuid, *hdr_profile) && updated;
         if (input_tree.contains("allow_sleep")) {
           output_tree["allow_sleep_updated"] = nvhttp::set_client_sleep_allowed(uuid, input_tree["allow_sleep"].get<bool>());
           updated = output_tree["allow_sleep_updated"].get<bool>() && updated;
@@ -3036,6 +3043,7 @@ namespace confighttp {
         output_tree["allow_sleep_updated"] = nvhttp::set_client_sleep_allowed(uuid, input_tree["allow_sleep"].get<bool>());
         updated = output_tree["allow_sleep_updated"].get<bool>() && updated;
       }
+      if (has_app_policy) updated = nvhttp::set_client_app_allowlist(uuid, allowed_apps) && updated;
       output_tree["status"] = updated;
       send_response(response, output_tree);
     } catch (std::exception &e) {

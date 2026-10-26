@@ -1,4 +1,12 @@
 {
+  "client_apps": {
+    "title": "Application access",
+    "description": "Limit this device to selected application profiles. This is not a sandbox for the Windows desktop. Existing streaming and input permissions still apply. Changing this list disconnects this device so its new permissions take effect.",
+    "restrict": "Only allow selected applications",
+    "empty_denies": "An empty selection denies all applications, including Remote Input and Remote Monitor.",
+    "load_error": "Applications could not be loaded. Existing selections are preserved.",
+    "missing": "Unavailable application ({uuid})"
+  },
   "service_startup": {
     "title": "Windows startup",
     "description": "Choose whether the installed service starts automatically with Windows. Turning this off selects Manual startup, so you can still launch the app when needed. This changes future startup only; the current stream keeps running.",
@@ -1148,6 +1156,7 @@
     "enable_discovery": "Enable network discovery",
     "enable_input_only_mode": "Enable input-only mode",
     "enable_pairing": "Enable client pairing",
+    "default_client_app_uuids": "Default application UUID allowlist for newly paired clients (JSON array or null)",
     "envvar_compatibility_mode": "Environment variable compatibility mode",
     "fallback_mode": "Fallback display mode",
     "forward_rumble": "Forward controller rumble",

@@ -1,4 +1,12 @@
 {
+  "client_apps": {
+    "title": "프로필 접근 권한",
+    "description": "이 기기가 사용할 프로필을 제한합니다. Windows 바탕 화면 자체를 격리하지는 않습니다. 기존 스트리밍·입력 권한도 함께 적용됩니다. 변경 시 이 기기의 연결을 끊고 새 권한을 적용합니다.",
+    "restrict": "선택한 프로필만 허용",
+    "empty_denies": "선택한 항목이 없으면 Remote Input과 Remote Monitor를 포함한 모든 프로필이 차단됩니다.",
+    "load_error": "프로필을 불러오지 못했습니다. 기존 선택은 유지됩니다.",
+    "missing": "사용할 수 없는 프로필 ({uuid})"
+  },
   "_common": {
     "all": "모두",
     "apply": "적용",

@@ -2292,6 +2292,7 @@ namespace nvhttp {
           named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
           named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
           named_cert_node["allow_sleep"] = named_cert_p->allow_sleep;
+          named_cert_node["allowed_app_uuids"] = client_app_policy::serialize(named_cert_p->allowed_app_uuids);
           named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
           named_cert_node["requested_resolution_only"] = named_cert_p->requested_resolution_only;
           if (named_cert_p->prefer_10bit_sdr) {
@@ -2440,6 +2441,9 @@ namespace nvhttp {
               named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
               named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
               named_cert_p->allow_sleep = el.contains("allow_sleep") && el["allow_sleep"].is_boolean() && el["allow_sleep"].get<bool>();
+              if (!client_app_policy::parse(el.value("allowed_app_uuids", nlohmann::json(nullptr)), named_cert_p->allowed_app_uuids)) {
+                BOOST_LOG(warning) << "Invalid client app allowlist; denying application access for this device.";
+              }
               named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
               named_cert_p->requested_resolution_only = util::get_non_string_json_value<bool>(el, "requested_resolution_only", false);
               named_cert_p->prefer_10bit_sdr =
@@ -2615,10 +2619,15 @@ namespace nvhttp {
 
     tls_identity::native_store_t tls_client_identities;
 
-  bool paired_client_uuid_enabled(const std::string_view uuid, const PERM expected_permissions) {
+  bool paired_client_uuid_enabled(const std::string_view uuid, const PERM expected_permissions,
+    const client_app_policy::allowlist_t &expected_apps) {
     std::lock_guard<std::mutex> lock(client_mutex);
     // Preserve the final current-mask check after launch preparation.
-    return tls_identity::current_native_permissions_match(client_root.named_devices, uuid, expected_permissions);
+    if (!tls_identity::current_native_permissions_match(client_root.named_devices, uuid, expected_permissions)) return false;
+    const auto it = std::find_if(client_root.named_devices.begin(), client_root.named_devices.end(), [uuid](const auto &client) {
+      return client && client->uuid == uuid;
+    });
+    return it != client_root.named_devices.end() && (*it)->allowed_app_uuids == expected_apps;
   }
 
     void forget_tls_client_identity(req_https_t request) {
@@ -3512,6 +3521,20 @@ namespace nvhttp {
         named_cert_p->always_use_virtual_display = false;
         named_cert_p->output_name_override.clear();
 
+        const auto default_apps = nlohmann::json::parse(config::sunshine.default_client_app_uuids, nullptr, false);
+        if (default_apps.is_discarded() || !client_app_policy::parse(default_apps, named_cert_p->allowed_app_uuids)) {
+          tree.put("root.paired", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", "The host's default client application policy is invalid");
+          remove_session(sess);
+          return;
+        }
+        if (named_cert_p->allowed_app_uuids) {
+          // A restricted first device must not inherit administrative operations.
+          named_cert_p->perm = PERM::_default;
+          named_cert_p->allow_client_commands = false;
+        }
+
         if (!add_authorized_client(named_cert_p)) {
           tree.put("root.paired", 0);
           tree.put("root.<xmlattr>.status_code", 503);
@@ -4188,6 +4211,7 @@ namespace nvhttp {
         // games are visible only to their owner so another paired caller gets
         // the remote-session controls instead of a globally busy host.
         const bool expose_active_game =
+          (!verified_client || client_app_policy::allows(verified_client->allowed_app_uuids, current_app ? current_app->uuid : "")) &&
           remote_session::exposes_active_game(caller, game, remote_gate.owner, remote_gate.active, replacement_confirmation_active) &&
           !(config::input.enable_input_only_mode && current_appid != proc::input_only_app_id);
         tree.put("root.currentgame", expose_active_game ? current_appid : 0);
@@ -4256,6 +4280,7 @@ namespace nvhttp {
         named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
         named_cert_node["allow_sleep"] = named_cert->allow_sleep;
+        named_cert_node["allowed_app_uuids"] = client_app_policy::serialize(named_cert->allowed_app_uuids);
         named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
         named_cert_node["requested_resolution_only"] = named_cert->requested_resolution_only;
 #ifdef _WIN32
@@ -4480,6 +4505,8 @@ namespace nvhttp {
 
         for (size_t i = 0; i < projection.catalogue.size(); ++i) {
           const auto &entry = projection.catalogue[i];
+          // Projected Resume/Remote Input/Monitor controls are not configured apps.
+          if (!client_app_policy::allows(verified_client->allowed_app_uuids, entry.uuid, entry.synthetic)) continue;
           const auto configured = std::find_if(visible_apps.begin(), visible_apps.end(), [&entry](const auto *candidate) {
             return candidate->uuid == entry.uuid;
           });
@@ -4584,6 +4611,13 @@ namespace nvhttp {
         proc::proc.resolve_app(appid_str, appuuid_str) : std::nullopt;
       const bool selected_monitor_profile = selected_app && selected_app->remote_monitor_profile;
       if (selected_monitor_profile) synthetic_control = remote_session::control_e::monitor;
+      if (!client_app_policy::allows(verified_client->allowed_app_uuids,
+            selected_app ? selected_app->uuid : "", synthetic_control != remote_session::control_e::none)) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put("root.<xmlattr>.status_message", "This device is not allowed to access the requested application");
+        return;
+      }
       // A secondary client sees the active game in its projected catalogue
       // while serverinfo is deliberately presented as free. Selecting it is a
       // Resume request, not a second process launch.
@@ -4935,7 +4969,7 @@ namespace nvhttp {
                           << request_client_identity.uuid << "' is '" << monitor.output << "'.";
         }
         stream::session::arm_shared_runtime_cleanup(launch_session->virtual_display_guid_bytes);
-        if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm)) {
+        if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm, verified_client->allowed_app_uuids)) {
           if (launch_session->role == remote_session::role_e::monitor) {
             if (remote_session::release_monitor(request_client_identity.uuid, launch_session->role_generation, "Paired client authorization revoked")) {
               forget_remote_owner(request_client_identity.uuid, launch_session->role, launch_session->role_generation);
@@ -4997,6 +5031,21 @@ launch_session->exact_target_hold.reset();
       }
       std::unique_lock normal_transition_lock {normal_http_app_transition_mutex};
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
+      if (!client_app_policy::allows(verified_client->allowed_app_uuids, requested_app ? requested_app->uuid : "")) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put("root.<xmlattr>.status_message", "This device is not allowed to access the requested application");
+        return;
+      }
+      if (verified_client->allowed_app_uuids && proc::proc.running() > 0) {
+        const auto active_app = proc::proc.resolve_app(proc::proc.running());
+        if (!client_app_policy::allows(verified_client->allowed_app_uuids, active_app ? active_app->uuid : "")) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", "Another application is running; this device may not replace it");
+          return;
+        }
+      }
       auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
       auto current_app_uuid = proc::proc.get_running_app_uuid();
       bool is_input_only = config::input.enable_input_only_mode && (appid == proc::input_only_app_id || (appuuid_str == REMOTE_INPUT_UUID));
@@ -5542,7 +5591,7 @@ launch_session->exact_target_hold.reset();
       stream::session::arm_shared_runtime_cleanup(
         launch_session->virtual_display_guid_bytes
       );
-      if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm)) {
+      if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm, verified_client->allowed_app_uuids)) {
         if (appid > 0) proc::proc.terminate(false, true, false, true, true);
         tree.put("root.resume", 0);
         tree.put("root.gamesession", 0);
@@ -5651,6 +5700,21 @@ launch_session->exact_target_hold.reset();
     std::unique_lock normal_transition_lock {normal_http_app_transition_mutex, std::defer_lock};
     if (normal_app_transition) {
       normal_transition_lock.lock();
+    }
+    const auto resumed_app = proc::proc.resolve_app(current_appid);
+    if (!client_app_policy::allows(verified_client->allowed_app_uuids, resumed_app ? resumed_app->uuid : "")) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "This device is not allowed to resume the running application");
+      return;
+    }
+    if (verified_client->allowed_app_uuids) {
+      // Resume is always bound to the running app, never a client-supplied
+      // alternate app UUID whose display/command settings it could inherit.
+      args.erase("appid");
+      args.erase("appuuid");
+      args.emplace("appid", std::to_string(current_appid));
+      args.emplace("appuuid", resumed_app->uuid);
     }
 
     // Newer Moonlight clients send localAudioPlayMode on /resume too,
@@ -6247,7 +6311,7 @@ launch_session->exact_target_hold.reset();
     stream::session::arm_shared_runtime_cleanup(
       launch_session->virtual_display_guid_bytes
     );
-    if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm)) {
+    if (!paired_client_uuid_enabled(launch_session->client_uuid, verified_client->perm, verified_client->allowed_app_uuids)) {
       tree.put("root.resume", 0);
       tree.put("root.gamesession", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -6326,6 +6390,22 @@ launch_session->exact_target_hold.reset();
       tree.put("root.<xmlattr>.status_code", 403);
       tree.put("root.<xmlattr>.status_message", permission_denied_status_message(verified_client, "Launch applications"sv));
 
+      return;
+    }
+
+    if (verified_client->allowed_app_uuids) {
+      // A scoped device may leave its own stream, but must never invoke the
+      // host-wide teardown below. In particular a web-admin launch can replace
+      // the current app while disconnect_client_sessions() joins old workers.
+      if (!paired_client_uuid_enabled(request_client_identity.uuid, verified_client->perm, verified_client->allowed_app_uuids)) {
+        tree.put("root.cancel", 0);
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put("root.<xmlattr>.status_message", "Paired client authorization changed");
+        return;
+      }
+      (void) rtsp_stream::disconnect_client_sessions(request_client_identity.uuid);
+      tree.put("root.cancel", 1);
+      tree.put("root.<xmlattr>.status_code", 200);
       return;
     }
 
@@ -6423,6 +6503,13 @@ launch_session->exact_target_hold.reset();
     const auto synthetic_control = remote_session::identify(util::from_view(appid), appuuid, current_appid, remote_configured_catalogue(proc::proc.get_apps()));
     auto app_ctx = synthetic_control == remote_session::control_e::none ?
       proc::proc.resolve_app(appid, appuuid) : std::nullopt;
+    if (!client_app_policy::allows(verified_client->allowed_app_uuids,
+          app_ctx ? app_ctx->uuid : "", synthetic_control != remote_session::control_e::none)) {
+      fg.disable();
+      response->write(SimpleWeb::StatusCode::client_error_forbidden);
+      response->close_connection_after_response = true;
+      return;
+    }
     std::string app_image;
     if (app_ctx) {
       app_image = proc::validate_app_image_path(app_ctx->image_path);
@@ -7418,6 +7505,37 @@ launch_session->exact_target_hold.reset();
       save_state();
     }
     return updated;
+  }
+
+  bool set_client_app_allowlist(std::string_view uuid, client_app_policy::allowlist_t allowed_apps) {
+    // /cancel owns this gate through teardown. Do not let a previously
+    // unrestricted cancel cross a newly committed restriction.
+    std::unique_lock request_lock {launch_request_mutex};
+    host_stream_control::activity_guard_t activity;
+    if (!activity) return false;
+    const bool transient = config::sunshine.flags[config::flag::FRESH_STATE];
+    if (!transient && !authorization_state_ready.load(std::memory_order_acquire)) return false;
+    bool changed = false;
+    bool saved = false;
+    {
+      if (!transient) statefile::migrate_recent_state_keys();
+      std::lock_guard state_lock(statefile::state_mutex());
+      std::lock_guard client_lock(client_mutex);
+      for (auto &client : client_root.named_devices) {
+        if (client->uuid != uuid) continue;
+        const auto previous = client->allowed_app_uuids;
+        saved = client_app_policy::persist_update(client->allowed_app_uuids, allowed_apps, [&] {
+          return transient || save_state_snapshot_locked(client_root);
+        });
+        changed = client->allowed_app_uuids != previous;
+        break;
+      }
+    }
+    request_lock.unlock();
+    // This crosses stream admission before removing pending/live transports.
+    // A handler holding an earlier TLS snapshot also fails its final policy check.
+    if (changed) revoke_paired_client_access(uuid);
+    return saved;
   }
 
   bool set_client_sleep_allowed(std::string_view uuid, bool allowed) {
